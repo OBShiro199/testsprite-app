@@ -82,3 +82,22 @@ Plain-English updates after each milestone.
   - The workspace name can change, but the board address doesn't.
   - There's a board URL with a Copy button.
   - Pro workspaces get an accent colour picker. Orange showed on Acme's public buttons and badges (tested ✅). On Free it's locked: "Upgrade to Pro to customise your board".
+
+## MILESTONE 6 - What we've done
+
+**In plain English:** we put up the shop sign, wrote the instruction manual, and checked everything works on a phone.
+
+- **Landing page (`/`).**
+  - Headline: "Hear what your customers want, then show them you're building it."
+  - Buttons: Start free and "See a live board".
+  - A preview of a board, How it works in three steps (Collect, Prioritise, Show progress), and a pricing summary.
+  - A "Reset demo data" link in the footer.
+- **Phone check.** Every page was loaded at 375px wide (iPhone size), and none scrolls sideways. The team menu folds into a "Menu" button. I also fixed a "1 replies" typo on the way.
+- **Final rule checks:**
+  - 5 wrong passwords lock the email ("Too many attempts. Try again in 10 minutes."), and even the right password is refused after that ✅
+  - Two tabs stay in sync: voting in one tab updated the other tab on its own ✅
+  - Removing a member and revoking an invite each free a seat ✅
+- **README.md** covers how to run it, every seed login, the test cards, how the data layer works, and the "SHA-256 is demo-only" note.
+- **TESTING.md** has the 14 numbered flows TestSprite will follow, with logins and test cards.
+- `npm run build` passes with no type errors. Everything is pushed to GitHub.
+- **Deploy:** waiting on a Vercel login (see the chat).
