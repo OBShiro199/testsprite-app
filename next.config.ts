@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const noStore = [{ key: "Cache-Control", value: "no-store, must-revalidate" }];
 
 const nextConfig: NextConfig = {
+  // Lets a local test build use its own folder without disturbing `next dev`.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   // Logged-in pages are never served from the back/forward cache, so pressing
   // Back after logging out always re-runs the session check.
   async headers() {

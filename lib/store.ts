@@ -4,7 +4,7 @@
 
 import { addMinutes, now, nowIso } from "./dates";
 import { buildSeed } from "./seed";
-import type { Db, Membership, Role, Session, User, Workspace } from "./types";
+import type { Db, Membership, Request, Role, Session, Status, User, Vote, Workspace } from "./types";
 
 export * from "./types";
 
@@ -14,7 +14,8 @@ const VOTER_EMAIL_KEY = "signalboard:voter-email";
 const CHANGE_EVENT = "signalboard:change";
 
 export type Errors = Record<string, string>;
-export type Result<T extends object = object> = ({ ok: true } & T) | { ok: false; errors: Errors };
+export type Failure = { ok: false; errors: Errors; duplicateId?: string };
+export type Result<T extends object = object> = ({ ok: true } & T) | Failure;
 
 const fail = (field: string, message: string): { ok: false; errors: Errors } => ({
   ok: false,
@@ -366,4 +367,211 @@ export async function logIn(emailInput: string, password: string): Promise<Resul
   const membership = data.memberships.find((m) => m.userId === user.id);
   writeSession({ userId: user.id, workspaceId: membership?.workspaceId ?? "" });
   return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Public board: requests, votes and the roadmap
+// ---------------------------------------------------------------------------
+
+export const FREE_REQUEST_LIMIT = 50;
+export const BOARD_FULL_MESSAGE = "This board isn't taking new requests right now.";
+
+export function getWorkspaceBySlug(slug: string): Workspace | null {
+  const wanted = slug.toLowerCase();
+  return db().workspaces.find((w) => w.slug.toLowerCase() === wanted) ?? null;
+}
+
+export function getWorkspace(id: string): Workspace | null {
+  return db().workspaces.find((w) => w.id === id) ?? null;
+}
+
+/** The board's accent colour, which only shows while the workspace is on Pro. */
+export function effectiveAccent(workspace: Workspace): string | null {
+  return workspace.plan === "pro" ? workspace.accentColour : null;
+}
+
+/** Requests that count toward the Free limit (merged ones don't). */
+export function requestsUsed(workspaceId: string): number {
+  return db().requests.filter((r) => r.workspaceId === workspaceId && !r.mergedInto).length;
+}
+
+export function requestLimit(workspace: Workspace): number | null {
+  return workspace.plan === "pro" ? null : FREE_REQUEST_LIMIT;
+}
+
+export function isBoardFull(workspace: Workspace): boolean {
+  const limit = requestLimit(workspace);
+  return limit !== null && requestsUsed(workspace.id) >= limit;
+}
+
+export function getRequest(id: string): Request | null {
+  return db().requests.find((r) => r.id === id) ?? null;
+}
+
+export function votesFor(requestId: string): Vote[] {
+  return db().votes.filter((v) => v.requestId === requestId);
+}
+
+export function voteCount(requestId: string): number {
+  return votesFor(requestId).length;
+}
+
+export function replyCount(requestId: string): number {
+  return db().replies.filter((r) => r.requestId === requestId).length;
+}
+
+export function hasVoted(requestId: string, email: string | null): boolean {
+  if (!email) return false;
+  const e = normaliseEmail(email);
+  return db().votes.some((v) => v.requestId === requestId && v.voterEmail === e);
+}
+
+export type Sort = "top" | "new" | "activity";
+
+export interface RequestRow {
+  request: Request;
+  votes: number;
+  replies: number;
+}
+
+export function listRequests(
+  workspaceId: string,
+  options: { sort?: Sort; status?: Status | "all"; search?: string } = {},
+): RequestRow[] {
+  const { sort = "top", status = "all", search = "" } = options;
+  const q = search.trim().toLowerCase();
+  const rows = db()
+    .requests.filter((r) => r.workspaceId === workspaceId && !r.mergedInto)
+    .filter((r) => status === "all" || r.status === status)
+    .filter((r) => !q || r.title.toLowerCase().includes(q) || r.description.toLowerCase().includes(q))
+    .map((request) => ({ request, votes: voteCount(request.id), replies: replyCount(request.id) }));
+  const newest = (a: RequestRow, b: RequestRow) => b.request.createdAt.localeCompare(a.request.createdAt);
+  if (sort === "new") rows.sort(newest);
+  else if (sort === "activity") rows.sort((a, b) => b.request.updatedAt.localeCompare(a.request.updatedAt));
+  else rows.sort((a, b) => b.votes - a.votes || newest(a, b));
+  return rows;
+}
+
+/** Planned, In progress and Shipped columns, each sorted by votes. */
+export function roadmap(workspaceId: string): Record<"planned" | "in_progress" | "shipped", RequestRow[]> {
+  return {
+    planned: listRequests(workspaceId, { status: "planned", sort: "top" }),
+    in_progress: listRequests(workspaceId, { status: "in_progress", sort: "top" }),
+    shipped: listRequests(workspaceId, { status: "shipped", sort: "top" }),
+  };
+}
+
+/** Follows merges to the request that is still live. */
+export function resolveMerged(id: string): Request | null {
+  let req = getRequest(id);
+  const seen = new Set<string>();
+  while (req?.mergedInto && !seen.has(req.id)) {
+    seen.add(req.id);
+    req = getRequest(req.mergedInto);
+  }
+  return req;
+}
+
+export function mergedFrom(requestId: string): Request[] {
+  return db().requests.filter((r) => r.mergedInto === requestId);
+}
+
+export interface PostRequestInput {
+  title: string;
+  description: string;
+  email: string;
+}
+
+export function postRequest(slug: string, input: PostRequestInput): Result<{ request: Request }> {
+  const workspace = getWorkspaceBySlug(slug);
+  if (!workspace) return fail("form", "This board doesn't exist.");
+
+  const title = input.title.trim();
+  const description = input.description.trim();
+  const email = normaliseEmail(input.email);
+  const errors: Errors = {};
+  if (title.length < 5 || title.length > 80) errors.title = "Title must be 5 to 80 characters.";
+  if (description.length > 1000) errors.description = "Description can be up to 1,000 characters.";
+  if (!email) errors.email = "Enter your email.";
+  else if (!isValidEmail(email)) errors.email = "Enter a valid email address.";
+  if (Object.keys(errors).length) return { ok: false, errors };
+
+  const duplicate = db().requests.find(
+    (r) =>
+      r.workspaceId === workspace.id &&
+      !r.mergedInto &&
+      r.status !== "shipped" &&
+      r.title.trim().toLowerCase() === title.toLowerCase(),
+  );
+  if (duplicate)
+    return { ok: false, errors: { title: "A request with this title already exists" }, duplicateId: duplicate.id };
+
+  if (isBoardFull(workspace)) return fail("form", BOARD_FULL_MESSAGE);
+
+  const createdAt = nowIso();
+  const request: Request = {
+    id: crypto.randomUUID(),
+    workspaceId: workspace.id,
+    title,
+    description,
+    authorEmail: email,
+    status: "open",
+    mergedInto: null,
+    createdAt,
+    updatedAt: createdAt,
+  };
+  mutate((d) => {
+    d.requests.push(request);
+    // The author automatically votes for their own request.
+    d.votes.push({ id: crypto.randomUUID(), requestId: request.id, voterEmail: email, createdAt });
+  });
+  return { ok: true, request };
+}
+
+export function vote(requestId: string, emailInput: string): Result {
+  const email = normaliseEmail(emailInput);
+  if (!isValidEmail(email)) return fail("email", "Enter a valid email address.");
+  const request = getRequest(requestId);
+  if (!request || request.mergedInto) return fail("form", "This request isn't taking votes.");
+  if (hasVoted(requestId, email)) return fail("form", "You've already voted for this.");
+  mutate((d) => {
+    d.votes.push({ id: crypto.randomUUID(), requestId, voterEmail: email, createdAt: nowIso() });
+  });
+  return { ok: true };
+}
+
+export function removeVote(requestId: string, emailInput: string): Result {
+  const email = normaliseEmail(emailInput);
+  if (!hasVoted(requestId, email)) return fail("form", "You haven't voted for this.");
+  mutate((d) => {
+    d.votes = d.votes.filter((v) => !(v.requestId === requestId && v.voterEmail === email));
+  });
+  return { ok: true };
+}
+
+/** The email this browser votes with, remembered after the first vote. */
+export function getVoterEmail(): string | null {
+  try {
+    return window.localStorage.getItem(VOTER_EMAIL_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setVoterEmail(email: string | null) {
+  try {
+    if (email) window.localStorage.setItem(VOTER_EMAIL_KEY, normaliseEmail(email));
+    else window.localStorage.removeItem(VOTER_EMAIL_KEY);
+  } catch {
+    // ignore
+  }
+  notify();
+}
+
+export function repliesFor(requestId: string) {
+  const data = db();
+  return data.replies
+    .filter((r) => r.requestId === requestId)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .map((reply) => ({ reply, author: data.users.find((u) => u.id === reply.userId) ?? null }));
 }
