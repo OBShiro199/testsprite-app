@@ -1,36 +1,66 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Signalboard
 
-## Getting Started
+A demo B2B SaaS for collecting customer feedback. A company gets a public board where customers post and upvote feature requests, a team inbox to sort them, a public roadmap, and Free/Pro plans with a simulated checkout.
 
-First, run the development server:
+**This is a demo for a video.** There is no backend, no database and no real payment provider. All data lives in the browser's `localStorage`, so every visitor (and every TestSprite browser) gets their own copy of the seed data.
+
+## Run it
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open http://localhost:3000. `npm run build` type-checks and builds for production.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Seed logins
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The app seeds itself the first time it loads in a browser. Every seed account uses the password **`Signal123!`**.
 
-## Learn More
+| Email | Workspace | Role | Plan |
+|---|---|---|---|
+| `owner@acme.test` (Ava Owner) | Acme (`/b/acme`) | Owner | Free: 48 of 50 requests, 1 of 2 seats |
+| `owner@northwind.test` (Nora Owner) | Northwind (`/b/northwind`) | Owner | Pro monthly, accent `#0E9F6E` |
+| `member@northwind.test` (Max Member) | Northwind | Member | Can't open billing or checkout |
 
-To learn more about Next.js, take a look at the following resources:
+Acme's board has "Export to CSV" and "CSV export" as duplicates; `customer3@example.com` voted for both.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+To start again, use **Reset demo data** in the landing page footer, or go to `/reset`.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Test cards (simulated checkout)
 
-## Deploy on Vercel
+| Card number | Result |
+|---|---|
+| `4242 4242 4242 4242` | Succeeds |
+| `4000 0000 0000 0002` | "Your card was declined." |
+| `4000 0000 0000 9995` | "Your card has insufficient funds." |
+| Any other Luhn-valid number | Succeeds |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Use any expiry from this month onwards and any 3-digit CVC (4 digits for numbers starting 34 or 37). Promo code **LAUNCH50** (any case) takes 50% off the first month of the monthly plan.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## How it's built
+
+- Next.js (App Router), TypeScript and Tailwind CSS. Every page is a client component.
+- `lib/store.ts` is the only code that reads or writes app data. Every rule (email matching, seats, votes, merges, promo codes, card checks, plan changes) is enforced there, not just in the UI, so typing a URL directly still hits the same checks.
+- Data is stored as one JSON object under `signalboard:v1` (`schemaVersion: 1`); the session is under `signalboard:session`. Open tabs stay in sync through the browser's `storage` event. Missing or unreadable data is re-seeded instead of crashing.
+- `lib/dates.ts` answers every "what time is it?" question. Month arithmetic clamps to the end of the month (31 January + 1 month = 28 or 29 February).
+- Money is stored in cents and formatted with `Intl.NumberFormat`.
+- UI follows the Quiet Precision design system: Geist, white surfaces with hairlines, one pastel blue accent, white buttons with a firm edge.
+
+### Faking "now" in development
+
+In `npm run dev` you can move the clock to test renewals and cancellations. In the browser console:
+
+```js
+localStorage.setItem("signalboard:now", "2026-12-01T12:00:00.000Z"); location.reload();
+// back to the real clock:
+localStorage.removeItem("signalboard:now"); location.reload();
+```
+
+This is ignored in production builds.
+
+## Security note
+
+Passwords are hashed with SHA-256 through `crypto.subtle` **for demo purposes only**. A real product would use a slow, salted password hash on a server. Nothing in this app is secret, and there are no environment variables.
+
+See [TESTING.md](TESTING.md) for step-by-step test flows.

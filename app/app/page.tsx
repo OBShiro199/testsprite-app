@@ -103,11 +103,11 @@ export default function InboxPage() {
                   </span>
                   <span className="tabular text-muted sm:w-16 sm:text-right">
                     <span data-testid="vote-count">{votes}</span>
-                    <span className="sm:sr-only"> votes</span>
+                    <span className="sm:sr-only"> {votes === 1 ? "vote" : "votes"}</span>
                   </span>
                   <span className="tabular text-muted sm:w-16 sm:text-right">
                     {replies}
-                    <span className="sm:sr-only"> replies</span>
+                    <span className="sm:sr-only"> {replies === 1 ? "reply" : "replies"}</span>
                   </span>
                   <span className="tabular text-faint sm:w-28 sm:text-right">{formatShortDate(request.updatedAt)}</span>
                 </Link>
