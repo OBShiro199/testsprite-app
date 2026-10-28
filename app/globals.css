@@ -1,26 +1,139 @@
 @import "tailwindcss";
 
+/* Quiet Precision design tokens. Build components only from these. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --surface: #ffffff;
+  --row-hover: #fafafb;
+  --hover: #f5f5f6;
+  --hairline: #e6e6e9;
+  --divider: #efeff1;
+  --btn-edge: #dcdde0;
+  --ink: #08090a;
+  --body: #3c4149;
+  --muted: #62666d;
+  --faint: #8a8f98;
+  --ghost: #b4b8bf;
+  --accent: #5f86e0;
+  --accent-soft: #f1f5fd;
+  --accent-edge: #c4d4f5;
+  --success: #27a644;
+  --warning: #d18b0f;
+  --danger: #eb5757;
+  /* Darker danger and warning inks for text on white (readable contrast). */
+  --danger-ink: #c53030;
+  --warning-ink: #9a6408;
+  /* Tag hue used for "Planned". */
+  --tag-violet: #8e6fd8;
+  --shadow-float: 0 4px 16px rgba(8, 9, 10, 0.08), 0 0 0 1px rgba(8, 9, 10, 0.04);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-morph: cubic-bezier(0.2, 0, 0, 1);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-surface: var(--surface);
+  --color-row-hover: var(--row-hover);
+  --color-hover: var(--hover);
+  --color-hairline: var(--hairline);
+  --color-divider: var(--divider);
+  --color-btn-edge: var(--btn-edge);
+  --color-ink: var(--ink);
+  --color-body: var(--body);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-ghost: var(--ghost);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-edge: var(--accent-edge);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-danger-ink: var(--danger-ink);
+  --color-warning-ink: var(--warning-ink);
+  --color-tag-violet: var(--tag-violet);
+  --text-app: 13px;
+  --text-app--line-height: 18px;
+  --shadow-float: var(--shadow-float);
+  --font-sans: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  background: var(--surface);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--body);
+  font-family: var(--font-geist), ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: -0.014em;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--ink);
+  font-weight: 500;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: clamp(23px, 2.8vw, 35px);
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+}
+
+h2 {
+  font-size: 20px;
+  line-height: 26px;
+  letter-spacing: -0.025em;
+}
+
+/* Digits that change line up. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Motion: opacity and transform only, one curve. */
+@keyframes qp-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+}
+@keyframes qp-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes qp-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+dialog[open] {
+  animation: qp-dialog-in 220ms var(--ease-out);
+}
+dialog[open]::backdrop {
+  background: rgba(8, 9, 10, 0.32);
+  animation: qp-fade-in 200ms var(--ease-out);
+}
+.qp-toast {
+  animation: qp-toast-in 240ms var(--ease-out);
+}
+.qp-press:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after,
+  dialog[open],
+  dialog[open]::backdrop {
+    animation: none !important;
+    transition: none !important;
+  }
 }
