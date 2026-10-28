@@ -15,6 +15,7 @@ import {
   card,
   inputClass,
   linkClass,
+  pill,
   textareaClass,
 } from "@/components/ui";
 import { formatShortDate } from "@/lib/dates";
@@ -184,6 +185,9 @@ export default function TeamRequestPage() {
               <div key={r.id} className={`${card} p-4`} data-testid="reply">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-ink">{author?.name ?? "Team member"}</span>
+                  <span className={`${pill} border-accent-edge bg-accent-soft text-[#3559b0]`} data-testid="team-badge">
+                    Team
+                  </span>
                   <span className="text-faint">{formatShortDate(r.createdAt)}</span>
                 </div>
                 <p className="mt-2 max-w-[65ch] whitespace-pre-line">{r.body}</p>

@@ -65,7 +65,9 @@ function PublicRequest({ workspace, accent }: { workspace: Workspace; accent: st
               <li key={reply.id} className={`${card} p-4`} data-testid="reply">
                 <div className="flex items-center gap-2">
                   <span className="font-medium text-ink">{author?.name ?? "Team member"}</span>
-                  <span className={`${pill} border-accent-edge bg-accent-soft text-[#3559b0]`}>Team</span>
+                  <span className={`${pill} border-accent-edge bg-accent-soft text-[#3559b0]`} data-testid="team-badge">
+                    Team
+                  </span>
                   <span className="text-faint">{formatShortDate(reply.createdAt)}</span>
                 </div>
                 <p className="mt-2 max-w-[65ch] whitespace-pre-line">{reply.body}</p>
