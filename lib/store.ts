@@ -4,7 +4,7 @@
 
 import { addMinutes, now, nowIso } from "./dates";
 import { buildSeed } from "./seed";
-import type { Db, Membership, Request, Role, Session, Status, User, Vote, Workspace } from "./types";
+import type { Db, Invite, Membership, Request, Role, Session, Status, User, Vote, Workspace } from "./types";
 
 export * from "./types";
 
@@ -650,5 +650,169 @@ export function mergeRequest(sourceId: string, targetId: string): Result {
     s.updatedAt = now;
     d.requests.find((x) => x.id === targetId)!.updatedAt = now;
   });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Team and seats
+// ---------------------------------------------------------------------------
+
+export function seatLimit(workspace: Workspace): number {
+  return workspace.plan === "pro" ? 10 : 2;
+}
+
+/** Seats used = members + pending invites. */
+export function seatsUsed(workspaceId: string): number {
+  const data = db();
+  return (
+    data.memberships.filter((m) => m.workspaceId === workspaceId).length +
+    data.invites.filter((i) => i.workspaceId === workspaceId && i.status === "pending").length
+  );
+}
+
+export function seatsFullMessage(workspace: Workspace): string {
+  return workspace.plan === "pro"
+    ? `You've used all ${seatLimit(workspace)} seats on the Pro plan.`
+    : `You've used all ${seatLimit(workspace)} seats on the Free plan. Upgrade to Pro to add more.`;
+}
+
+export function listTeam(workspaceId: string) {
+  const data = db();
+  const members = data.memberships
+    .filter((m) => m.workspaceId === workspaceId)
+    .map((membership) => ({ membership, user: data.users.find((u) => u.id === membership.userId)! }))
+    .filter((m) => m.user)
+    .sort((a, b) =>
+      a.membership.role === b.membership.role
+        ? a.user.name.localeCompare(b.user.name)
+        : a.membership.role === "owner"
+          ? -1
+          : 1,
+    );
+  const invites = data.invites
+    .filter((i) => i.workspaceId === workspaceId && i.status === "pending")
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return { members, invites };
+}
+
+export function inviteTeammate(emailInput: string): Result<{ invite: Invite }> {
+  const ctx = requireOwner();
+  const workspace = ctx.workspace;
+  const email = normaliseEmail(emailInput);
+  if (!isValidEmail(email)) return fail("email", "Enter a valid email address.");
+
+  const data = db();
+  const isMember = data.memberships.some(
+    (m) =>
+      m.workspaceId === workspace.id &&
+      normaliseEmail(data.users.find((u) => u.id === m.userId)?.email ?? "") === email,
+  );
+  if (isMember) return fail("email", "That person is already on your team.");
+  if (data.invites.some((i) => i.workspaceId === workspace.id && i.status === "pending" && i.email === email))
+    return fail("email", "You've already invited that email.");
+  if (seatsUsed(workspace.id) >= seatLimit(workspace)) return fail("seats", seatsFullMessage(workspace));
+
+  const invite: Invite = {
+    id: crypto.randomUUID(),
+    workspaceId: workspace.id,
+    email,
+    token: crypto.randomUUID().replace(/-/g, ""),
+    status: "pending",
+    createdAt: nowIso(),
+  };
+  mutate((d) => void d.invites.push(invite));
+  return { ok: true, invite };
+}
+
+export function revokeInvite(inviteId: string): Result {
+  const ctx = requireOwner();
+  const invite = db().invites.find((i) => i.id === inviteId);
+  if (!invite || invite.workspaceId !== ctx.workspace.id || invite.status !== "pending")
+    return fail("form", "That invite isn't pending any more.");
+  mutate((d) => {
+    d.invites.find((i) => i.id === inviteId)!.status = "revoked";
+  });
+  return { ok: true };
+}
+
+export function removeMember(membershipId: string): Result {
+  const ctx = requireOwner();
+  const data = db();
+  const membership = data.memberships.find((m) => m.id === membershipId);
+  if (!membership || membership.workspaceId !== ctx.workspace.id)
+    return fail("form", "That person isn't on your team.");
+  if (membership.userId === ctx.user.id) return fail("form", "You can't remove yourself.");
+  const owners = data.memberships.filter((m) => m.workspaceId === ctx.workspace.id && m.role === "owner");
+  if (membership.role === "owner" && owners.length <= 1) return fail("form", "You can't remove the last owner.");
+  mutate((d) => {
+    d.memberships = d.memberships.filter((m) => m.id !== membershipId);
+  });
+  return { ok: true };
+}
+
+export type InviteLookup =
+  | { state: "invalid" }
+  | { state: "used"; workspace: Workspace }
+  | { state: "pending"; invite: Invite; workspace: Workspace };
+
+export function getInvite(token: string): InviteLookup {
+  const data = db();
+  const invite = data.invites.find((i) => i.token === token);
+  const workspace = invite ? data.workspaces.find((w) => w.id === invite.workspaceId) : null;
+  if (!invite || !workspace || invite.status === "revoked") return { state: "invalid" };
+  if (invite.status === "accepted") return { state: "used", workspace };
+  return { state: "pending", invite, workspace };
+}
+
+function joinWorkspace(d: Db, invite: Invite, userId: string) {
+  const already = d.memberships.some((m) => m.workspaceId === invite.workspaceId && m.userId === userId);
+  if (!already)
+    d.memberships.push({
+      id: crypto.randomUUID(),
+      workspaceId: invite.workspaceId,
+      userId,
+      role: "member",
+      createdAt: nowIso(),
+    });
+  d.invites.find((i) => i.id === invite.id)!.status = "accepted";
+}
+
+export function acceptInvite(token: string): Result {
+  const lookup = getInvite(token);
+  if (lookup.state === "invalid") return fail("form", "This invite isn't valid any more.");
+  if (lookup.state === "used") return fail("form", "This invite has already been used.");
+  const ctx = getContext();
+  if (!ctx) return fail("form", "Log in to accept this invite.");
+  if (normaliseEmail(ctx.user.email) !== lookup.invite.email)
+    return fail(
+      "form",
+      `This invite was sent to ${lookup.invite.email}. Log out and sign in with that email to accept it.`,
+    );
+  mutate((d) => joinWorkspace(d, lookup.invite, ctx.user.id));
+  writeSession({ userId: ctx.user.id, workspaceId: lookup.workspace.id });
+  return { ok: true };
+}
+
+/** Sign-up from an invite link: the email is fixed to the invited address and no new workspace is made. */
+export async function signUpWithInvite(token: string, nameInput: string, password: string): Promise<Result> {
+  const lookup = getInvite(token);
+  if (lookup.state === "invalid") return fail("form", "This invite isn't valid any more.");
+  if (lookup.state === "used") return fail("form", "This invite has already been used.");
+  const email = lookup.invite.email;
+  const name = nameInput.trim();
+  const errors: Errors = {};
+  if (!name) errors.name = "Enter your name.";
+  if (db().users.some((u) => normaliseEmail(u.email) === email))
+    errors.email = "An account with this email already exists. Log in instead.";
+  if (!isValidPassword(password)) errors.password = "Use at least 8 characters, including a letter and a number.";
+  if (Object.keys(errors).length) return { ok: false, errors };
+
+  const passwordHash = await hashPassword(password);
+  const user: User = { id: crypto.randomUUID(), name, email, passwordHash, createdAt: nowIso() };
+  mutate((d) => {
+    d.users.push(user);
+    joinWorkspace(d, lookup.invite, user.id);
+  });
+  writeSession({ userId: user.id, workspaceId: lookup.workspace.id });
   return { ok: true };
 }
