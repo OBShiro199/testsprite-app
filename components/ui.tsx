@@ -172,6 +172,7 @@ export function ConfirmDialog({
   title,
   message,
   confirmLabel,
+  cancelLabel = "Cancel",
   danger,
   onConfirm,
   onClose,
@@ -180,6 +181,7 @@ export function ConfirmDialog({
   title: string;
   message: React.ReactNode;
   confirmLabel: string;
+  cancelLabel?: string;
   danger?: boolean;
   onConfirm: () => void;
   onClose: () => void;
@@ -189,7 +191,7 @@ export function ConfirmDialog({
       <p className="text-muted">{message}</p>
       <div className="mt-6 flex justify-end gap-2">
         <button type="button" className={btnSecondary} onClick={onClose}>
-          Cancel
+          {cancelLabel}
         </button>
         <button type="button" className={danger ? btnDanger : btnPrimary} onClick={onConfirm}>
           {confirmLabel}

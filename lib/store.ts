@@ -2,9 +2,23 @@
 // and every business rule is enforced here (not only in the UI), so calling a
 // page directly by URL still hits the same checks.
 
-import { addMinutes, now, nowIso } from "./dates";
+import { addMinutes, addMonths, addYears, isExpiryCurrentOrFuture, now, nowIso } from "./dates";
+import { DECLINED_CARDS, cardBrand, digitsOnly, isAmex, passesLuhn } from "./card";
 import { buildSeed } from "./seed";
-import type { Db, Invite, Membership, Request, Role, Session, Status, User, Vote, Workspace } from "./types";
+import type {
+  Db,
+  Interval,
+  Invite,
+  Invoice,
+  Membership,
+  Request,
+  Role,
+  Session,
+  Status,
+  User,
+  Vote,
+  Workspace,
+} from "./types";
 
 export * from "./types";
 
@@ -142,9 +156,40 @@ export function resetDemoData() {
   commit(seeded);
 }
 
-// Placeholder so db() can call it; billing (milestone 5) fills this in.
-function runLifecycle(_data: Db): boolean {
-  return false;
+/**
+ * Runs every time the app loads. Renews active subscriptions whose period has
+ * ended (adding a full-price invoice), and moves cancelled ones back to Free.
+ * Returns true if anything changed.
+ */
+function runLifecycle(data: Db): boolean {
+  const current = now();
+  let changed = false;
+  for (const workspace of data.workspaces) {
+    const sub = workspace.subscription;
+    if (!sub) continue;
+    // Guard against an endless loop if dates are ever corrupted.
+    for (let i = 0; i < 1000 && new Date(sub.currentPeriodEnd) <= current; i++) {
+      changed = true;
+      if (sub.status === "cancelling") {
+        // Back to Free. The accent colour stays stored, but only shows on Pro.
+        workspace.plan = "free";
+        workspace.subscription = null;
+        break;
+      }
+      const start = new Date(sub.currentPeriodEnd);
+      sub.currentPeriodStart = start.toISOString();
+      sub.currentPeriodEnd = (sub.interval === "month" ? addMonths(start, 1) : addYears(start, 1)).toISOString();
+      data.invoices.push({
+        id: crypto.randomUUID(),
+        workspaceId: workspace.id,
+        date: start.toISOString(),
+        description: `Signalboard Pro (${sub.interval === "month" ? "monthly" : "yearly"}) renewal`,
+        amountCents: PRICES[sub.interval],
+        cardLast4: sub.cardLast4,
+      });
+    }
+  }
+  return changed;
 }
 
 // ---------------------------------------------------------------------------
@@ -814,5 +859,184 @@ export async function signUpWithInvite(token: string, nameInput: string, passwor
     joinWorkspace(d, lookup.invite, user.id);
   });
   writeSession({ userId: user.id, workspaceId: lookup.workspace.id });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Plans, promo codes and the simulated checkout
+// ---------------------------------------------------------------------------
+
+export const PRICES: Record<Interval, number> = { month: 2900, year: 29000 };
+const PROMO_CODE = "LAUNCH50";
+
+export interface Quote {
+  interval: Interval;
+  baseCents: number;
+  discountCents: number;
+  dueCents: number;
+  /** The code that's applied and valid for this interval, if any. */
+  promo: string | null;
+  promoError: string | null;
+}
+
+/** Codes match after trimming and ignoring case. */
+export function normalisePromo(code: string): string {
+  return code.trim().toUpperCase();
+}
+
+export function promoError(code: string, interval: Interval): string | null {
+  const c = normalisePromo(code);
+  if (c !== PROMO_CODE) return "That code isn't valid.";
+  if (interval !== "month") return "This code only works on the monthly plan.";
+  return null;
+}
+
+/** Prices a checkout. LAUNCH50 takes 50% off the first month of the monthly plan only. */
+export function quote(interval: Interval, code: string | null): Quote {
+  const baseCents = PRICES[interval];
+  const error = code ? promoError(code, interval) : null;
+  const valid = !!code && !error;
+  const discountCents = valid ? Math.round(baseCents / 2) : 0;
+  return {
+    interval,
+    baseCents,
+    discountCents,
+    dueCents: baseCents - discountCents,
+    promo: valid ? normalisePromo(code!) : null,
+    promoError: error,
+  };
+}
+
+export interface CardInput {
+  name: string;
+  number: string;
+  expiry: string;
+  cvc: string;
+  country: string;
+}
+
+export function validateCard(card: CardInput): Errors {
+  const errors: Errors = {};
+  const number = digitsOnly(card.number);
+  if (!card.name.trim()) errors.name = "Enter the name on the card.";
+
+  if (!number) errors.number = "Enter your card number.";
+  else if (!passesLuhn(number)) errors.number = "Your card number is invalid.";
+
+  const expiry = card.expiry.trim().match(/^(\d{2})\s*\/\s*(\d{2})$/);
+  if (!card.expiry.trim()) errors.expiry = "Enter the expiry date.";
+  else if (!expiry || Number(expiry[1]) < 1 || Number(expiry[1]) > 12)
+    errors.expiry = "Enter the expiry date as MM/YY.";
+  else if (!isExpiryCurrentOrFuture(Number(expiry[1]), Number(expiry[2]))) errors.expiry = "Your card has expired.";
+
+  const cvc = card.cvc.trim();
+  const cvcLength = isAmex(number) ? 4 : 3;
+  if (!cvc) errors.cvc = "Enter the security code.";
+  else if (!new RegExp(`^\\d{${cvcLength}}$`).test(cvc)) errors.cvc = "Your card's security code is invalid.";
+
+  if (!card.country) errors.country = "Choose your billing country.";
+  return errors;
+}
+
+export function workspaceInvoices(workspaceId: string): Invoice[] {
+  return db()
+    .invoices.filter((i) => i.workspaceId === workspaceId)
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+/**
+ * Takes a (simulated) payment and moves the workspace to Pro. Refuses if the
+ * workspace is already on Pro, so a double-click can never create a second
+ * subscription or invoice.
+ */
+export function pay(interval: Interval, promoCode: string | null, card: CardInput): Result<{ invoice: Invoice }> {
+  const ctx = getContext();
+  if (!ctx || !ctx.workspace) return fail("form", "You need to log in first.");
+  if (ctx.role !== "owner") return fail("form", "Only the workspace owner can manage billing.");
+  if (interval !== "month" && interval !== "year") return fail("form", "Pick monthly or yearly.");
+  if (ctx.workspace.plan === "pro") return fail("form", "You're already on Pro.");
+
+  const errors = validateCard(card);
+  if (Object.keys(errors).length) return { ok: false, errors };
+
+  const number = digitsOnly(card.number);
+  const declined = DECLINED_CARDS[number];
+  if (declined) return fail("card", declined);
+
+  const q = quote(interval, promoCode);
+  const workspaceId = ctx.workspace.id;
+  const start = now();
+  const invoice: Invoice = {
+    id: crypto.randomUUID(),
+    workspaceId,
+    date: start.toISOString(),
+    description: `Signalboard Pro (${interval === "month" ? "monthly" : "yearly"})${q.promo ? ` · ${q.promo}` : ""}`,
+    amountCents: q.dueCents,
+    cardLast4: number.slice(-4),
+  };
+  let alreadyPro = false;
+  mutate((d) => {
+    const ws = d.workspaces.find((w) => w.id === workspaceId)!;
+    if (ws.plan === "pro") {
+      alreadyPro = true;
+      return;
+    }
+    ws.plan = "pro";
+    ws.subscription = {
+      interval,
+      status: "active",
+      currentPeriodStart: start.toISOString(),
+      currentPeriodEnd: (interval === "month" ? addMonths(start, 1) : addYears(start, 1)).toISOString(),
+      cardLast4: number.slice(-4),
+      cardBrand: cardBrand(number),
+      promoApplied: !!q.promo,
+    };
+    d.invoices.push(invoice);
+  });
+  if (alreadyPro) return fail("form", "You're already on Pro.");
+  return { ok: true, invoice };
+}
+
+export function cancelSubscription(): Result {
+  const ctx = requireOwner();
+  if (!ctx.workspace.subscription) return fail("form", "There's no subscription to cancel.");
+  mutate((d) => {
+    d.workspaces.find((w) => w.id === ctx.workspace.id)!.subscription!.status = "cancelling";
+  });
+  return { ok: true };
+}
+
+export function resumeSubscription(): Result {
+  const ctx = requireOwner();
+  const sub = ctx.workspace.subscription;
+  if (!sub || sub.status !== "cancelling") return fail("form", "There's nothing to resume.");
+  if (new Date(sub.currentPeriodEnd) <= now()) return fail("form", "This subscription has already ended.");
+  mutate((d) => {
+    d.workspaces.find((w) => w.id === ctx.workspace.id)!.subscription!.status = "active";
+  });
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export function renameWorkspace(nameInput: string): Result {
+  const ctx = requireOwner();
+  const name = nameInput.trim();
+  if (name.length < 2 || name.length > 40) return fail("name", "Workspace name must be 2 to 40 characters.");
+  mutate((d) => {
+    d.workspaces.find((w) => w.id === ctx.workspace.id)!.name = name;
+  });
+  return { ok: true };
+}
+
+export function setAccentColour(colour: string | null): Result {
+  const ctx = requireOwner();
+  if (ctx.workspace.plan !== "pro") return fail("accent", "Upgrade to Pro to customise your board.");
+  if (colour !== null && !/^#[0-9a-fA-F]{6}$/.test(colour)) return fail("accent", "Pick a colour like #0E9F6E.");
+  mutate((d) => {
+    d.workspaces.find((w) => w.id === ctx.workspace.id)!.accentColour = colour ? colour.toUpperCase() : null;
+  });
   return { ok: true };
 }

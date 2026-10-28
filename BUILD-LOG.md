@@ -52,3 +52,33 @@ Plain-English updates after each milestone.
   - Logged out, you see "Join Acme on Signalboard" with a sign-up form whose email is locked to the invited address. Sam signed up and landed in Acme's inbox as a Member (tested ✅).
   - Reusing the link says "This invite has already been used." A fake link says "This invite isn't valid any more." (tested ✅).
 - **Members vs owners.** Members manage requests and see the team list read-only. They don't get Settings, Billing or the invite tools. Owners can remove members (with a confirm step), but can never remove themselves or the last owner.
+
+## MILESTONE 5 - What we've done
+
+**In plain English:** we built the shop till. It's pretend money, but it follows every real-shop rule.
+
+- **Pricing page (`/pricing`).** Free vs Pro, with a Monthly/Yearly switch ($29 a month or $290 a year).
+- **Checkout (`/checkout`), owners only.** It looks like a hosted checkout: an order summary, a promo-code box, a card form and a "Test mode" note listing the test cards.
+- **Promo codes:**
+  - " launch50 " in any capitals gives "LAUNCH50 · 50% off first month −$14.50", "Due today $14.50", "Then $29.00 per month" (tested ✅).
+  - On Yearly it says "This code only works on the monthly plan." with no discount. Switch back to Monthly and the discount returns (tested ✅).
+  - An unknown code says "That code isn't valid." (tested ✅).
+  - One code at a time, with a Remove link.
+- **Card checks, shown next to each field:**
+  - A wrong number fails the Luhn check (the maths check every real card number passes): "Your card number is invalid."
+  - Last month's date: "Your card has expired." **This month's date is accepted.**
+  - A bad CVC: "Your card's security code is invalid." (all tested ✅).
+- **Test cards.** 4000…0002 says "Your card was declined." and 4000…9995 says "Your card has insufficient funds." (tested ✅). 4242… succeeds.
+- **The Pay button.** It says "Pay $14.50", then disables and shows "Processing payment…" for 1.5 seconds. **I clicked it three times fast and got exactly one subscription and one invoice** (tested ✅).
+- **Success page.** "Acme is on Pro", $14.50 paid, renews November 28, 2026. 31 January + 1 month = end of February (checked with leap years too ✅).
+- **Billing (`/app/billing`).**
+  - Shows the plan, renewal date, "Visa ending 4242", seats and requests used, and invoices (newest first).
+  - Members get "Only the workspace owner can manage billing." even when typing the URL directly. The same goes for `/checkout` (tested ✅).
+- **Cancel, resume and downgrade:**
+  - Cancelling shows "Pro until November 28, 2026. You'll move to Free after that." and the workspace stays Pro (tested ✅).
+  - I fast-forwarded the clock (a development-only switch) past that date. Acme dropped back to Free and the board colour switched off, but stayed saved for next time (tested ✅).
+  - Active subscriptions renew automatically at the full $29.00 (Northwind renewed, tested ✅).
+- **Settings (`/app/settings`).**
+  - The workspace name can change, but the board address doesn't.
+  - There's a board URL with a Copy button.
+  - Pro workspaces get an accent colour picker. Orange showed on Acme's public buttons and badges (tested ✅). On Free it's locked: "Upgrade to Pro to customise your board".
