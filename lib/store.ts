@@ -575,3 +575,80 @@ export function repliesFor(requestId: string) {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((reply) => ({ reply, author: data.users.find((u) => u.id === reply.userId) ?? null }));
 }
+
+// ---------------------------------------------------------------------------
+// Team app: status changes, replies and merging
+// ---------------------------------------------------------------------------
+
+/** A request in the current workspace, or an error if it isn't one. */
+function requireOwnRequest(requestId: string) {
+  const ctx = requireContext();
+  const request = getRequest(requestId);
+  if (!request || request.workspaceId !== ctx.workspace.id) throw new Error("That request isn't in your workspace.");
+  return { ctx, request };
+}
+
+export function setStatus(requestId: string, status: Status): Result {
+  const { request } = requireOwnRequest(requestId);
+  if (request.mergedInto) return fail("form", "Merged requests can't change status.");
+  if (!(["open", "planned", "in_progress", "shipped"] as Status[]).includes(status))
+    return fail("status", "Pick a valid status.");
+  mutate((d) => {
+    const r = d.requests.find((x) => x.id === requestId)!;
+    r.status = status;
+    r.updatedAt = nowIso();
+  });
+  return { ok: true };
+}
+
+export function addReply(requestId: string, bodyInput: string): Result {
+  const { ctx } = requireOwnRequest(requestId);
+  const body = bodyInput.trim();
+  if (body.length < 1 || body.length > 2000) return fail("body", "Replies must be 1 to 2,000 characters.");
+  mutate((d) => {
+    const createdAt = nowIso();
+    d.replies.push({ id: crypto.randomUUID(), requestId, userId: ctx.user.id, body, createdAt });
+    d.requests.find((x) => x.id === requestId)!.updatedAt = createdAt;
+  });
+  return { ok: true };
+}
+
+/** Requests this one could be merged into: same workspace, not itself, not already merged. */
+export function mergeTargets(sourceId: string, search = ""): RequestRow[] {
+  const source = getRequest(sourceId);
+  if (!source) return [];
+  const q = search.trim().toLowerCase();
+  return listRequests(source.workspaceId, { sort: "top" }).filter(
+    (row) => row.request.id !== sourceId && (!q || row.request.title.toLowerCase().includes(q)),
+  );
+}
+
+/**
+ * Merges source into target. Votes move across, but anyone who voted for both
+ * keeps a single vote, so the target ends up with one vote per unique voter.
+ * Replies stay with the source. Can't be undone.
+ */
+export function mergeRequest(sourceId: string, targetId: string): Result {
+  const { request: source } = requireOwnRequest(sourceId);
+  const target = getRequest(targetId);
+  if (!target || target.workspaceId !== source.workspaceId) return fail("target", "Pick a request from this board.");
+  if (targetId === sourceId) return fail("target", "A request can't be merged into itself.");
+  if (source.mergedInto) return fail("target", "This request has already been merged.");
+  if (target.mergedInto) return fail("target", "That request has already been merged into another one.");
+
+  mutate((d) => {
+    const targetVoters = new Set(d.votes.filter((v) => v.requestId === targetId).map((v) => v.voterEmail));
+    d.votes = d.votes.flatMap((v) => {
+      if (v.requestId !== sourceId) return [v];
+      if (targetVoters.has(v.voterEmail)) return []; // already counted on the target
+      targetVoters.add(v.voterEmail);
+      return [{ ...v, requestId: targetId }];
+    });
+    const now = nowIso();
+    const s = d.requests.find((x) => x.id === sourceId)!;
+    s.mergedInto = targetId;
+    s.updatedAt = now;
+    d.requests.find((x) => x.id === targetId)!.updatedAt = now;
+  });
+  return { ok: true };
+}
